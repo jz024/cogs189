@@ -1,3 +1,39 @@
-train/Competition_train_cnt.txt
+# Data files
+train/
 test.txt
-train/Competition_train_lab.txt
+test_label.txt
+data/
+
+# Model checkpoints and saved models
+models/model_registry/*.h5
+
+# Jupyter notebook checkpoints
+.ipynb_checkpoints/
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / packaging
+dist/
+build/
+*.egg-info/
+
+# Virtual environment
+venv/
+env/
+.env/
+
+# IDE settings
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
