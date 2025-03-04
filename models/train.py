@@ -97,6 +97,9 @@ def train_tacnn_pipeline(
     evaluate_model(model, X_val_csp, y_val, label="Validation TACSPNN")
 
     return model, filters, frequency_bands
+
+
+
 def train_deep_coral_model(
     model,
     X_train, Y_train,
@@ -128,7 +131,7 @@ def train_deep_coral_model(
     feature_extractor = Model(inputs=model.input, outputs=model.get_layer("feature_layer").output)
 
     # 2) Define optimizer & classification loss
-    optimizer = tf.keras.optimizers.legacy.Adam(learning_rate=0.001)
+    optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
     classification_loss_fn = tf.keras.losses.BinaryCrossentropy()
 
     # Convert data to tf.Tensor if needed

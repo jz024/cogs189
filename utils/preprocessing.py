@@ -61,9 +61,9 @@ def load_and_preprocess_data(
     # --------------------------
     # 4) Bandpass filter
     # --------------------------
-    X_train_filt = bandpass_filter(X_train, lowcut, highcut, fs, order)
-    X_val_filt   = bandpass_filter(X_val,   lowcut, highcut, fs, order)
-    X_test_filt  = bandpass_filter(X_test,  lowcut, highcut, fs, order)
+    # X_train_filt = bandpass_filter(X_train, lowcut, highcut, fs, order)
+    # X_val_filt   = bandpass_filter(X_val,   lowcut, highcut, fs, order)
+    # X_test_filt  = bandpass_filter(X_test,  lowcut, highcut, fs, order)
 
     # --------------------------
     # 5) Save preprocessed data
@@ -74,19 +74,19 @@ def load_and_preprocess_data(
     os.makedirs("data/preprocessed/test", exist_ok=True)
 
     # Train
-    np.save("data/preprocessed/train/X_train_filt.npy", X_train_filt)
+    np.save("data/preprocessed/train/X_train_filt.npy", X_train)
     np.save("data/preprocessed/train/y_train.npy",      y_train)
 
     # Validation
-    np.save("data/preprocessed/validation/X_val_filt.npy", X_val_filt)
+    np.save("data/preprocessed/validation/X_val_filt.npy", X_val)
     np.save("data/preprocessed/validation/y_val.npy",      y_val)
 
     # Test
-    np.save("data/preprocessed/test/X_test_filt.npy", X_test_filt)
+    np.save("data/preprocessed/test/X_test_filt.npy", X_test)
     np.save("data/preprocessed/test/y_test.npy",      y_test)
 
     # Return the filtered data (useful if you want to proceed in-memory)
-    return X_train_filt, y_train, X_val_filt, y_val, X_test_filt, y_test
+    return X_train, y_train, X_val, y_val, X_test, y_test
 
 def print_data_info(X_train, y_train, X_val, y_val, X_test, y_test):
     """

@@ -12,9 +12,11 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
 # Local imports
 from utils.preprocessing import load_and_preprocess_data, print_data_info
-from models.csp import csp_fit, csp_transform
+from models.csp import cov, spatialFilter, apply_CSP_filter, log_norm_band_power
 from models.evaluate import evaluate_model
 from models.coral import coral_transform
+from scipy.signal import butter, lfilter
+from sklearn.metrics import accuracy_score, confusion_matrix
 
 # TA-CSPNN
 from models.train import train_tacnn_pipeline
@@ -47,40 +49,59 @@ def main():
         order=5
     )
 
-    # Print dataset shapes
-    print_data_info(X_train, y_train, X_val, y_val, X_test, y_test)
 
     # ====================================================
     # =           2. Baseline CSP + LDA                =
     # ====================================================
+    X_train_class1 = X_train[y_train == -1]
+    X_train_class2 = X_train[y_train == 1]
+    Ra = np.mean([cov(trial) for trial in X_train_class1], axis=0)
+    Rb = np.mean([cov(trial) for trial in X_train_class2], axis=0)
+
     print("\n=== Baseline CSP + LDA ===")
     n_components = 3
-    csp_filters = csp_fit(X_train, y_train, n_components=n_components)
-
+    csp_filters = spatialFilter(Ra, Rb)[:n_components]
+    
     # Transform train/val/test via CSP
-    X_train_csp = csp_transform(X_train, csp_filters)
-    X_val_csp   = csp_transform(X_val,   csp_filters)
-    X_test_csp  = csp_transform(X_test,  csp_filters)
+    X_train_filtered = apply_CSP_filter(X_train, csp_filters)
+    X_val_filtered = apply_CSP_filter(X_val, csp_filters)
+    X_test_filtered = apply_CSP_filter(X_test, csp_filters)
+
+    # Extract features
+    X_train_features = log_norm_band_power(X_train_filtered)
+    X_val_features = log_norm_band_power(X_val_filtered)
+    X_test_features = log_norm_band_power(X_test_filtered)
 
     # Train LDA on baseline CSP features
-    clf = LinearDiscriminantAnalysis()
-    clf.fit(X_train_csp, y_train)
+    clf = LinearDiscriminantAnalysis(solver='lsqr', shrinkage='auto')
+    clf.fit(X_train_features, y_train)
 
     # Evaluate on Validation + Test
-    evaluate_model(clf, X_val_csp, y_val, label="Validation")
-    evaluate_model(clf, X_test_csp, y_test, label="Test")
+    evaluate_model(clf, X_val_features, y_val, label="Validation")
+    evaluate_model(clf, X_test_features, y_test, label="Test")
+    
 
     # ====================================================
     # =           3. CORAL Adaptation on CSP           =
     # ====================================================
     print("\n=== CORAL-Adaptive CSP ===")
     # Align val and test sets to training distribution
-    X_val_csp_coral  = coral_transform(X_train_csp, X_val_csp,  reg=1e-5)
-    X_test_csp_coral = coral_transform(X_train_csp, X_test_csp, reg=1e-5)
+    X_val_csp_coral  = coral_transform(X_train_csp, X_val_csp,  reg=1e-2)
+    X_test_csp_coral = coral_transform(X_train_csp, X_test_csp, reg=1e-2)
+    X_train_csp_coral = coral_transform(X_train_csp, X_train_csp, reg=1e-2)
+
+    clf_coral = LinearDiscriminantAnalysis()
+    clf_coral.fit(X_train_csp_coral, y_train)
 
     # Evaluate CORAL on validation + test
-    evaluate_model(clf, X_val_csp_coral,  y_val,  label="Validation CORAL")
-    evaluate_model(clf, X_test_csp_coral, y_test, label="Test CORAL")
+    evaluate_model(clf_coral, X_val_csp_coral,  y_val,  label="Validation CORAL")
+    evaluate_model(clf_coral, X_test_csp_coral, y_test, label="Test CORAL")
+
+    print("Train Cov:", np.cov(X_train_csp, rowvar=False))
+    print("Test  Cov:", np.cov(X_test_csp,  rowvar=False))
+    
+    print(clf_coral.predict(X_test_csp_coral))
+    print(y_test)
 
     # ====================================================
     # =           4. TA-CSPNN (Multi-Band)             =
@@ -104,6 +125,8 @@ def main():
     X_test_csp_tacnn = X_test_csp_tacnn.reshape((X_test_csp_tacnn.shape[0], X_test_csp_tacnn.shape[1], 1))
 
     evaluate_model(model_tacnn, X_test_csp_tacnn, y_test, label="Test TACSPNN")
+    print(model_tacnn.predict(X_test_csp_tacnn))
+    print(y_test)
 
     # ====================================================
     # =           5. Deep CORAL Training               =
@@ -140,6 +163,8 @@ def main():
     )
 
     print(f"Deep CORAL final test accuracy: {final_acc:.4f}")
+    print(model_deep_coral.predict(X_test_csp_deep))
+    print(y_test)
 
     # Optionally do PCA or other analysis on feature_extractor outputs.
 

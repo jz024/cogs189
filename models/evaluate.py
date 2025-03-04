@@ -9,7 +9,7 @@ def evaluate_model(model, X, y, label=""):
     probs = model.predict(X)
     
     # Convert probabilities to binary predictions using 0.5 threshold
-    preds = (probs > 0.5).astype(int)
+    preds = [1 if prob >= 0.5 else -1 for prob in probs]
     
     # Calculate metrics
     acc = accuracy_score(y, preds)
