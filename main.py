@@ -16,6 +16,7 @@ from models.csp import cov, spatialFilter, apply_CSP_filter, log_norm_band_power
 from models.evaluate import evaluate_model
 from models.coral import coral_transform
 from scipy.signal import butter, lfilter
+from scipy.linalg import sqrtm
 from sklearn.metrics import accuracy_score, confusion_matrix
 
 # TA-CSPNN
@@ -26,7 +27,7 @@ from models.deep_coral import build_deep_coral_model
 from models.train import train_deep_coral_model
 
 # If you need multi_band_filter/csp_transform for test:
-from models.tacnn import multi_band_filter, csp_transform as tacnn_csp_transform
+from models.tacnn import multi_band_filter
 
 def main():
     # ----------------------------------------------------
@@ -53,12 +54,12 @@ def main():
     # ====================================================
     # =           2. Baseline CSP + LDA                =
     # ====================================================
+    print("\n=== Baseline CSP + LDA ===")
+
     X_train_class1 = X_train[y_train == -1]
     X_train_class2 = X_train[y_train == 1]
     Ra = np.mean([cov(trial) for trial in X_train_class1], axis=0)
     Rb = np.mean([cov(trial) for trial in X_train_class2], axis=0)
-
-    print("\n=== Baseline CSP + LDA ===")
     n_components = 3
     csp_filters = spatialFilter(Ra, Rb)[:n_components]
     
@@ -86,9 +87,9 @@ def main():
     # ====================================================
     print("\n=== CORAL-Adaptive CSP ===")
     # Align val and test sets to training distribution
-    X_val_csp_coral  = coral_transform(X_train_csp, X_val_csp,  reg=1e-2)
-    X_test_csp_coral = coral_transform(X_train_csp, X_test_csp, reg=1e-2)
-    X_train_csp_coral = coral_transform(X_train_csp, X_train_csp, reg=1e-2)
+    X_val_csp_coral  = coral_transform(X_train_features, X_val_features,  reg=1e-2)
+    X_test_csp_coral = X_test_features
+    X_train_csp_coral = coral_transform(X_train_features, X_train_features, reg=1e-2)
 
     clf_coral = LinearDiscriminantAnalysis()
     clf_coral.fit(X_train_csp_coral, y_train)
@@ -97,8 +98,8 @@ def main():
     evaluate_model(clf_coral, X_val_csp_coral,  y_val,  label="Validation CORAL")
     evaluate_model(clf_coral, X_test_csp_coral, y_test, label="Test CORAL")
 
-    print("Train Cov:", np.cov(X_train_csp, rowvar=False))
-    print("Test  Cov:", np.cov(X_test_csp,  rowvar=False))
+    print("Train Cov:", np.cov(X_train_features, rowvar=False))
+    print("Test Cov:", np.cov(X_test_features,  rowvar=False))
     
     print(clf_coral.predict(X_test_csp_coral))
     print(y_test)
@@ -119,13 +120,30 @@ def main():
         patience=5
     )
 
-    # Evaluate on test. Must do same multi-band filter + CSP transform
     X_test_filt = multi_band_filter(X_test, freq_bands_used)
-    X_test_csp_tacnn = tacnn_csp_transform(X_test_filt, filters_tacnn)
-    X_test_csp_tacnn = X_test_csp_tacnn.reshape((X_test_csp_tacnn.shape[0], X_test_csp_tacnn.shape[1], 1))
 
-    evaluate_model(model_tacnn, X_test_csp_tacnn, y_test, label="Test TACSPNN")
-    print(model_tacnn.predict(X_test_csp_tacnn))
+    X_test_csp_list = []
+
+    for band_idx, filters in enumerate(filters_tacnn):
+        X_test_band = X_test_filt[..., band_idx]
+        X_test_csp_band = apply_CSP_filter(X_test_band, filters)
+        X_test_csp_features = log_norm_band_power(X_test_csp_band)
+        X_test_csp_list.append(X_test_csp_features)
+
+    # Merge features from all bands
+    X_test_csp = np.concatenate(X_test_csp_list, axis=1)
+
+    # Reshape for CNN (samples, features, 1)
+    X_test_csp = X_test_csp.reshape((X_test_csp.shape[0], X_test_csp.shape[1], 1))
+
+    # Get model predictions
+    probs = model_tacnn.predict(X_test_csp)
+    preds = np.where(probs >= 0.5, 1, -1)
+
+    # Compute accuracy
+    test_acc = accuracy_score(y_test, preds)
+    print("Test Accuracy:", test_acc)
+    print(probs)
     print(y_test)
 
     # ====================================================
@@ -134,13 +152,23 @@ def main():
     print("\n=== Deep CORAL ===")
     # We can reuse X_train_csp, X_test_csp as "source" and "target" features
     # if we want to do domain adaptation from train->test.
+    # Compute covariance matrices
+    C_S = np.cov(X_train_features, rowvar=False) + np.eye(X_train_features.shape[1])
+    C_T = np.cov(X_test_features, rowvar=False) + np.eye(X_test_features.shape[1])
 
+    C_S_sqrt = sqrtm(C_S)
+    C_T_sqrt = sqrtm(C_T)
+
+    A_coral = np.linalg.inv(C_S_sqrt) @ C_T_sqrt
+
+    # Transform source features
+    X_train_coral = X_train_features @ A_coral
+    X_test_coral  = X_test_features
     # For CNN input, reshape so shape = (samples, features, 1)
-    X_train_csp_deep = X_train_csp.reshape(X_train_csp.shape[0], X_train_csp.shape[1], 1)
-    X_test_csp_deep  = X_test_csp.reshape( X_test_csp.shape[0],  X_test_csp.shape[1], 1)
+    X_train_csp_deep = X_train_coral.reshape(X_train_coral.shape[0], X_train_coral.shape[1], 1)
+    X_test_csp_deep  = X_test_coral.reshape( X_test_coral.shape[0],  X_test_coral.shape[1], 1)
 
     # Build the Deep CORAL model
-    from models.deep_coral import build_deep_coral_model
     input_shape = (X_train_csp_deep.shape[1], 1)
     model_deep_coral = build_deep_coral_model(input_shape)
 
@@ -151,10 +179,11 @@ def main():
     alpha = 0.01  # weighting for CORAL loss
     epochs = 50
     batch_size = 16
+    y_train_new = np.where(y_train == -1, 0, 1)
 
     final_acc, model_deep_coral, feature_extractor = train_deep_coral_model(
         model_deep_coral,
-        X_train_csp_deep, y_train,       # Source data
+        X_train_csp_deep, y_train_new,       # Source data
         X_test_csp_deep,  y_test,        # Target data
         epochs=epochs,
         batch_size=batch_size,
@@ -162,7 +191,6 @@ def main():
         verbose=1
     )
 
-    print(f"Deep CORAL final test accuracy: {final_acc:.4f}")
     print(model_deep_coral.predict(X_test_csp_deep))
     print(y_test)
 

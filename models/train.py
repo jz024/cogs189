@@ -4,32 +4,12 @@ from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.models import Model
 from models.tacnn import (
     multi_band_filter, 
-    csp_fit, 
-    csp_transform, 
+    apply_csp_per_band,
     build_tacnn_model
 )
 from models.evaluate import evaluate_model
+from sklearn.metrics import accuracy_score
 
-def coral_loss(source_features, target_features):
-    """Compute CORAL loss between source and target features."""
-    # Center the features
-    source_mean = tf.reduce_mean(source_features, axis=0, keepdims=True)
-    target_mean = tf.reduce_mean(target_features, axis=0, keepdims=True)
-    source_centered = source_features - source_mean
-    target_centered = target_features - target_mean
-
-    # Compute covariance matrices
-    batch_size = tf.cast(tf.shape(source_features)[0], tf.float32)
-    target_batch_size = tf.cast(tf.shape(target_features)[0], tf.float32)
-    
-    source_cov = (tf.matmul(source_centered, source_centered, transpose_a=True) / 
-                  (batch_size - 1))
-    target_cov = (tf.matmul(target_centered, target_centered, transpose_a=True) / 
-                  (target_batch_size - 1))
-
-    # Compute Frobenius norm
-    coral_loss = tf.reduce_sum(tf.square(source_cov - target_cov))
-    return coral_loss
 
 def train_tacnn_pipeline(
     X_train, y_train,
@@ -58,13 +38,13 @@ def train_tacnn_pipeline(
     # ------------------------------------------------
     # 2) Fit CSP filters on training set only
     # ------------------------------------------------
-    filters = csp_fit(X_train_filt, y_train, n_components=n_components)
+    X_train_csp, X_val_csp, filters = apply_csp_per_band(X_train_filt, y_train, X_val_filt, frequency_bands, n_components)
 
     # ------------------------------------------------
-    # 3) Transform to CSP features
+    # 3) Change -1/1 to 0/1 for deep learning
     # ------------------------------------------------
-    X_train_csp = csp_transform(X_train_filt, filters)
-    X_val_csp   = csp_transform(X_val_filt,   filters)
+    y_train_new = np.where(y_train == -1, 0, 1)
+    y_val_new   = np.where(y_val == -1, 0, 1)
 
     # Reshape for 1D CNN => (samples, features, 1)
     X_train_csp = X_train_csp.reshape((X_train_csp.shape[0], X_train_csp.shape[1], 1))
@@ -83,9 +63,9 @@ def train_tacnn_pipeline(
     # ------------------------------------------------
     # 5) Train + Evaluate on Validation
     # ------------------------------------------------
-    history = model.fit(
-        X_train_csp, y_train,
-        validation_data=(X_val_csp, y_val),
+    model.fit(
+        X_train_csp, y_train_new,
+        validation_data=(X_val_csp, y_val_new),
         epochs=epochs,
         batch_size=batch_size,
         callbacks=[early_stopping],
@@ -94,10 +74,37 @@ def train_tacnn_pipeline(
 
     # Evaluate on validation set
     print("\n=== TA-CSPNN Validation Evaluation ===")
-    evaluate_model(model, X_val_csp, y_val, label="Validation TACSPNN")
+    X_val_csp = X_val_csp.reshape((X_val_csp.shape[0], X_val_csp.shape[1], 1))
+    probs = model.predict(X_val_csp)
+    preds = 2 * (probs >= 0.5) - 1
+
+    acc = accuracy_score(y_val, preds)
+    print("Validation Accuracy:", acc)
 
     return model, filters, frequency_bands
 
+
+
+def coral_loss(source_features, target_features):
+    """Compute CORAL loss between source and target features."""
+    # Center the features
+    source_mean = tf.reduce_mean(source_features, axis=0, keepdims=True)
+    target_mean = tf.reduce_mean(target_features, axis=0, keepdims=True)
+    source_centered = source_features - source_mean
+    target_centered = target_features - target_mean
+
+    # Compute covariance matrices
+    batch_size = tf.cast(tf.shape(source_features)[0], tf.float32)
+    target_batch_size = tf.cast(tf.shape(target_features)[0], tf.float32)
+    
+    source_cov = (tf.matmul(source_centered, source_centered, transpose_a=True) / 
+                  (batch_size - 1))
+    target_cov = (tf.matmul(target_centered, target_centered, transpose_a=True) / 
+                  (target_batch_size - 1))
+
+    # Compute Frobenius norm
+    coral_loss = tf.reduce_sum(tf.square(source_cov - target_cov))
+    return coral_loss
 
 
 def train_deep_coral_model(
@@ -183,7 +190,8 @@ def train_deep_coral_model(
     # Final evaluation on target domain
     preds_test = model(X_test_tf, training=False).numpy()
     preds_test_bin = (preds_test >= 0.5).astype(int).ravel()
-    final_accuracy = np.mean(preds_test_bin == Y_test)
+    final_predictions = 2 * preds_test_bin - 1
+    final_accuracy = np.mean(final_predictions.flatten() == Y_test)  # Compare to original labels (-1,1)
 
     if verbose == 1:
         print(f"Deep CORAL Adaptation Test Accuracy: {final_accuracy:.4f}")

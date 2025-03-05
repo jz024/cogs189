@@ -9,6 +9,7 @@ from tensorflow.keras.layers import (Conv1D, BatchNormalization,
 from scipy.linalg import eigh
 
 from utils.preprocessing import bandpass_filter
+from models.csp import cov, spatialFilter, apply_CSP_filter, log_norm_band_power
 
 def multi_band_filter(X, frequency_bands, fs=1000):
     """
@@ -33,53 +34,42 @@ def _regularized_cov(trial_data, epsilon=1e-6):
     cov_matrix += epsilon * np.eye(cov_matrix.shape[0])
     return cov_matrix
 
-def csp_fit(X, y, n_components=6, epsilon=1e-6):
-    """
-    Fit CSP filters for two-class data in {0,1}.
-    If X has shape (trials, channels, samples, freq_bands),
-    we average across freq bands dimension before computing covariance.
-    """
-    # If multi-band, average over freq band => (trials, channels, samples)
-    if X.ndim == 4:
-        X = np.mean(X, axis=-1)
+def apply_csp_per_band(X_train, y_train, X_val, frequency_bands, n_components=6):
+    """Applies CSP transformation separately for each frequency band."""
+    n_bands = len(frequency_bands)
+    
+    X_train_csp_list, X_val_csp_list = [], []
+    filters_list = []
+    
+    for band_idx in range(n_bands):
+        X_train_band = X_train[..., band_idx]  # Extract one frequency band
+        X_val_band = X_val[..., band_idx]
+        
+        # Separate trials by class
+        X_train_class1 = X_train_band[y_train == -1]
+        X_train_class2 = X_train_band[y_train == 1]
 
-    # Separate trials by class
-    X_class0 = X[y == -1]
-    X_class1 = X[y == 1]
+        if len(X_train_class1) == 0 or len(X_train_class2) == 0:
+            raise ValueError("One of the classes has no samples!")
 
-    if len(X_class0) == 0 or len(X_class1) == 0:
-        raise ValueError("One of the classes (0 or 1) has no samples!")
+        # Compute CSP filters
+        Ra = np.mean([cov(trial) for trial in X_train_class1], axis=0)
+        Rb = np.mean([cov(trial) for trial in X_train_class2], axis=0)
+        filters = spatialFilter(Ra, Rb)[:n_components]
+        filters_list.append(filters)
 
-    cov_class0 = np.mean([_regularized_cov(trial_data, epsilon) for trial_data in X_class0], axis=0)
-    cov_class1 = np.mean([_regularized_cov(trial_data, epsilon) for trial_data in X_class1], axis=0)
+        # Apply CSP and extract features
+        X_train_csp = apply_CSP_filter(X_train_band, filters)
+        X_val_csp = apply_CSP_filter(X_val_band, filters)
 
-    w, v = eigh(cov_class0, cov_class1)
-    idx = np.argsort(np.abs(w))[::-1]
-    v = v[:, idx]
+        X_train_csp_list.append(log_norm_band_power(X_train_csp))
+        X_val_csp_list.append(log_norm_band_power(X_val_csp))
 
-    # Top & bottom n_components
-    filters = np.hstack([v[:, :n_components], v[:, -n_components:]])
-    return filters
+    # Merge features from all bands
+    X_train_csp = np.concatenate(X_train_csp_list, axis=1)
+    X_val_csp = np.concatenate(X_val_csp_list, axis=1)
 
-def csp_transform(X, filters):
-    """
-    Transform EEG data X with the given CSP filters to obtain log-variance features.
-    If multi-band => average freq dimension first.
-    Returns shape: (n_trials, 2*n_components).
-    """
-    if X.ndim == 4:
-        X = np.mean(X, axis=-1)
-
-    n_trials, _, _ = X.shape
-    n_filters = filters.shape[1]
-    features = np.zeros((n_trials, n_filters))
-
-    for i in range(n_trials):
-        projected = filters.T @ X[i]
-        var = np.var(projected, axis=1)
-        features[i, :] = np.log(var + 1e-10)
-
-    return features
+    return X_train_csp, X_val_csp, filters_list
 
 def build_tacnn_model(input_shape):
     """
