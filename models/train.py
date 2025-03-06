@@ -114,6 +114,7 @@ def train_deep_coral_model(
     epochs=50,
     batch_size=16,
     alpha=0.01,
+    patience=5,
     verbose=1
 ):
     """
@@ -150,6 +151,9 @@ def train_deep_coral_model(
     train_size = X_train.shape[0]
     n_batches = int(np.ceil(train_size / batch_size))
 
+    best_val_loss = float("inf")
+    patience_counter = 0
+
     for epoch in range(epochs):
         # Create TensorFlow dataset and shuffle
         dataset = tf.data.Dataset.from_tensor_slices((X_train_tf, Y_train_tf))
@@ -182,11 +186,29 @@ def train_deep_coral_model(
             optimizer.apply_gradients(zip(gradients, model.trainable_variables))
             total_loss_val += total_loss.numpy()
 
+        avg_loss = total_loss_val / n_batches
+
+        val_preds = model(X_test_tf, training=False)
+        val_loss = classification_loss_fn(Y_test_tf, val_preds).numpy()
+
         if verbose == 1:
-            avg_loss = total_loss_val / n_batches
             # Evaluate classification on source, or skip if unlabeled
             print(f"Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f}")
 
+        # Early Stopping Check
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            patience_counter = 0  # Reset patience
+            best_model_weights = model.get_weights()  # Save best model state
+        else:
+            patience_counter += 1
+
+        if patience_counter >= patience:
+            print(f"Early stopping triggered at epoch {epoch+1}.")
+            model.set_weights(best_model_weights)  # Restore best model
+            break
+
+        
     # Final evaluation on target domain
     preds_test = model(X_test_tf, training=False).numpy()
     preds_test_bin = (preds_test >= 0.5).astype(int).ravel()
