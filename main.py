@@ -7,17 +7,21 @@ Main script to run multiple pipelines:
 4. Deep CORAL (custom training loop)
 """
 
+import pandas as pd
 import numpy as np
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 
 # Local imports
-from utils.preprocessing import load_and_preprocess_data, print_data_info
+import sys
+import os
+sys.path.append(os.path.abspath("utils"))
+from preprocessing import load_and_preprocess_data, print_data_info
 from models.csp import cov, spatialFilter, apply_CSP_filter, log_norm_band_power
 from models.evaluate import evaluate_model
 from models.coral import coral_transform
 from scipy.signal import butter, lfilter
 from scipy.linalg import sqrtm
-from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.metrics import accuracy_score, confusion_matrix, log_loss, f1_score, recall_score, precision_score
 
 # TA-CSPNN
 from models.train import train_tacnn_pipeline
@@ -28,6 +32,9 @@ from models.train import train_deep_coral_model
 
 # If you need multi_band_filter/csp_transform for test:
 from models.tacnn import multi_band_filter
+
+# Plotting functions
+from model_plot import plot_results
 
 def main():
     # ----------------------------------------------------
@@ -49,6 +56,45 @@ def main():
         fs=1000,
         order=5
     )
+
+    def result_stat_table(y_true, y_pred, output_file):
+        labels = sorted(set(y_true))  
+        
+        results = {
+            'Label': labels,
+            'F1 Score': f1_score(y_true, y_pred, average=None),
+            'Recall': recall_score(y_true, y_pred, average=None),
+            'Precision': precision_score(y_true, y_pred, average=None)
+        }
+        
+        results_df = pd.DataFrame(results)
+        
+        overall_scores = {
+            'Label': ['Micro', 'Macro', 'Weighted'],
+            'F1 Score': [
+                f1_score(y_true, y_pred, average='micro'),
+                f1_score(y_true, y_pred, average='macro'),
+                f1_score(y_true, y_pred, average='weighted')
+            ],
+            'Recall': [
+                recall_score(y_true, y_pred, average='micro'),
+                recall_score(y_true, y_pred, average='macro'),
+                recall_score(y_true, y_pred, average='weighted')
+            ],
+            'Precision': [
+                precision_score(y_true, y_pred, average='micro'),
+                precision_score(y_true, y_pred, average='macro'),
+                precision_score(y_true, y_pred, average='weighted')
+            ]
+        }
+        
+        overall_df = pd.DataFrame(overall_scores)
+        final_df = pd.concat([results_df, overall_df], ignore_index=True)
+        
+        final_df.to_csv(output_file, index=False)
+        print(f'Results saved to {output_file}')
+
+
 
 
     # ====================================================
@@ -78,9 +124,11 @@ def main():
     clf.fit(X_train_features, y_train)
 
     # Evaluate on Validation + Test
-    evaluate_model(clf, X_val_features, y_val, label="Validation")
-    evaluate_model(clf, X_test_features, y_test, label="Test")
-    
+    acc_val, y_preds_val = evaluate_model(clf, X_val_features, y_val, label="Validation")
+    acc_test, y_pred = evaluate_model(clf, X_test_features, y_test, label="Test")
+
+    plot_results(y_true = y_test, y_pred = y_pred, model_name = "Baseline CSP + LDA")
+    result_stat_table(y_test, y_pred, "outputs/baseline_csp_lda_result.csv")
 
     # ====================================================
     # =           3. CORAL Adaptation on CSP           =
@@ -95,14 +143,18 @@ def main():
     clf_coral.fit(X_train_csp_coral, y_train)
 
     # Evaluate CORAL on validation + test
-    evaluate_model(clf_coral, X_val_csp_coral,  y_val,  label="Validation CORAL")
-    evaluate_model(clf_coral, X_test_csp_coral, y_test, label="Test CORAL")
+    acc_val, y_pred_val = evaluate_model(clf_coral, X_val_csp_coral,  y_val,  label="Validation CORAL")
+    acc_test, y_pred = evaluate_model(clf_coral, X_test_csp_coral, y_test, label="Test CORAL")
 
     print("Train Cov:", np.cov(X_train_features, rowvar=False))
     print("Test Cov:", np.cov(X_test_features,  rowvar=False))
     
     print(clf_coral.predict(X_test_csp_coral))
     print(y_test)
+
+    plot_results(y_true = y_test, y_pred = y_pred, model_name = "CORAL Adaptation on CSP")
+    result_stat_table(y_test, y_pred, "outputs/coral_ada_result.csv")
+
 
     # ====================================================
     # =           4. TA-CSPNN (Multi-Band)             =
@@ -138,13 +190,17 @@ def main():
 
     # Get model predictions
     probs = model_tacnn.predict(X_test_csp)
-    preds = np.where(probs >= 0.5, 1, -1)
+    y_pred = np.where(probs >= 0.5, 1, -1)
 
     # Compute accuracy
-    test_acc = accuracy_score(y_test, preds)
+    test_acc = accuracy_score(y_test, y_pred)
     print("Test Accuracy:", test_acc)
     print(probs)
     print(y_test)
+
+    plot_results(y_true = y_test, y_pred = y_pred, model_name = "TA-CSPNN (Multi-Band)")
+    result_stat_table(y_test, y_pred, "outputs/TA-CSPNN_result.csv")
+
 
     # ====================================================
     # =           5. Deep CORAL Training               =
@@ -191,8 +247,15 @@ def main():
         verbose=1
     )
 
-    print(model_deep_coral.predict(X_test_csp_deep))
+    probs = model_deep_coral.predict(X_test_csp_deep)
+    y_pred = [1 if prob >= 0.5 else -1 for prob in probs]
+
+    print(y_pred)
     print(y_test)
+
+    plot_results(y_true = y_test, y_pred = y_pred, model_name = "Deep CORAL Training")
+    result_stat_table(y_test, y_pred, "outputs/deep_coral_result.csv")
+
 
     # Optionally do PCA or other analysis on feature_extractor outputs.
 

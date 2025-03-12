@@ -8,7 +8,10 @@ from tensorflow.keras.layers import (Conv1D, BatchNormalization,
                                      Flatten, Dense, Lambda)
 from scipy.linalg import eigh
 
-from utils.preprocessing import bandpass_filter
+import sys
+import os
+sys.path.append(os.path.abspath("utils"))
+from preprocessing import bandpass_filter
 from models.csp import cov, spatialFilter, apply_CSP_filter, log_norm_band_power
 
 def multi_band_filter(X, frequency_bands, fs=1000):
